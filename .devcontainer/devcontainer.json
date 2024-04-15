@@ -1,0 +1,14 @@
+{
+	"name": "dev",
+	"build": {
+		"dockerfile": "Containerfile"
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-vscode.cpptools"
+			]
+		}
+	},
+	"runArgs": [ "--security-opt", "seccomp=unconfined", "--security-opt", "label=disable", "--security-opt", "apparmor=unconfined" ]
+}

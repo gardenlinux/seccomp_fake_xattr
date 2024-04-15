@@ -1,0 +1,94 @@
+name: build
+on: push
+jobs:
+  build:
+    strategy:
+      matrix:
+        arch:
+          - x86_64
+          - aarch64
+      fail-fast: false
+    name: ${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-latest-arm' || 'ubuntu-latest' }}
+    steps:
+      - name: setup arm runner
+        if: matrix.arch == 'aarch64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends podman uidmap slirp4netns dbus-user-session
+          id="$(id -u)"
+          sudo systemctl start user@$id
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$id/bus
+          systemctl --user start dbus
+          mkdir -p "$HOME/.config/containers"
+          echo 'unqualified-search-registries = ["docker.io"]' > "$HOME/.config/containers/registries.conf"
+      - uses: actions/checkout@v4
+      - name: build dev container
+        run: podman build -t dev -f .devcontainer/Containerfile .devcontainer
+      - name: start dev container
+        run: >-
+          podman run --rm
+          --security-opt seccomp=unconfined
+          --security-opt label=disable
+          --security-opt apparmor=unconfined
+          --uidmap 0:1:1000
+          --uidmap 1000:0:1
+          --uidmap 1001:1001:64536
+          --gidmap 0:1:1000
+          --gidmap 1000:0:1
+          --gidmap 1001:1001:64536
+          -v "$PWD:/workdir"
+          -w /workdir
+          -d --name dev
+          dev tail -f /dev/null
+      - name: build
+        run: podman exec dev make all
+      - name: test
+        run: podman exec dev make test
+      - name: stop dev container
+        run: podman stop dev
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fake_xattr_${{ matrix.arch }}
+          path: fake_xattr
+  release:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: download artifact (x86_64)
+        uses: actions/download-artifact@v4
+        with:
+          name: fake_xattr_x86_64
+          path: fake_xattr_x86_64
+      - name: download artifact (aarch64)
+        uses: actions/download-artifact@v4
+        with:
+          name: fake_xattr_aarch64
+          path: fake_xattr_aarch64
+      - name: setup env context
+        run: |
+          repo='${{ github.repository }}'
+          commit='${{ github.sha }}'
+          echo "artifact_prefix=${repo#*/}-${commit::8}" | tee -a "$GITHUB_ENV"
+      - name: pack artifacts
+        run: |
+          for arch in x86_64 aarch64; do
+            tar -c --transform "s|^fake_xattr_|${artifact_prefix}-|" "fake_xattr_$arch" | gzip > "${artifact_prefix}-${arch}.tar.gz"
+          done
+      - name: publish release
+        run: |
+          if gh release view latest > /dev/null 2>&1; then
+            gh release delete -y latest
+          fi
+          git tag --force latest
+          git push --force origin latest
+          gh release create latest \
+          --verify-tag \
+          --notes "created by GitHub actions run [${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" \
+          "${artifact_prefix}-x86_64.tar.gz" \
+          "${artifact_prefix}-aarch64.tar.gz" \
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

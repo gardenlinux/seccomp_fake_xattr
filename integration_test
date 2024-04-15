@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+
+set -eufo pipefail
+
+if [ "${1-}" != run_tests ]; then
+	export FAKE_XATTR_CHECK_MEM=1
+	exec unshare --map-root-user --map-auto --mount --propagation unchanged ./fake_xattr "$0" run_tests
+fi
+
+echo "running integration tests:"
+
+progress_animation() {
+	label="${1-}"
+	max="${2-}"
+
+	reset_cursor() {
+		printf '\033[?25h' >&2
+	}
+
+	if [ -t 2 ]; then
+		trap reset_cursor EXIT
+		printf '\033[?25l\033[s\033[K' >&2
+		printf '\033[u\033[K%s ' "$label" >&2
+		cntr=0
+		symbols=(▱▱▱ ▰▱▱ ▱▰▱ ▱▱▰)
+		num_symbols="${#symbols[@]}"
+		while read -r line; do
+			[ -t 1 ] || printf '%s\n' "$line"
+			cntr="$(( cntr + 1 ))"
+			if [ -n "$max" ]; then
+				percent="$(( ( cntr * 100 ) / max ))"
+				status="$(printf '%2d%%' "$percent")"
+			else
+				status="${symbols[$(( cntr % num_symbols ))]}"
+			fi
+			printf '\033[u\033[K%s \033[94m%s\033[0m' "$label" "$status" >&2
+		done
+		printf '\033[u\033[K\033[?25h' >&2
+	else
+		cat
+	fi
+}
+
+shuf_words() {
+	LC_ALL=C grep -xE '[[:alnum:]]+' < /usr/share/dict/words | shuf "$@"
+}
+
+test_run() (
+	exec 3>&1
+	exec 1>&2
+
+	cd "$1"
+	mkdir files expected_xattr
+
+	shuf_words -n 32 > file_names
+
+	for i in {1..32}; do
+		attr_name="$(shuf_words -n "$(shuf -n 1 -i 1-8)" | tr '\n' '.' | sed 's/.$//' | head -c 200)"
+		echo "$attr_name"
+	done > attr_names
+
+	# by pigeon hole principal we can be sure to also test overwriting of at least one file / attr
+	for i in {1..64}; do
+		file_name=$(shuf -n 1 file_names)
+		touch "files/$file_name"
+
+		for i in {1..64}; do
+			attr_name="$(shuf -n 1 attr_names)"
+
+			data_len="$(shuf -n 1 -i 0-64)"
+			data="0x$(head -c "$data_len" /dev/urandom | od -An -t x1 | tr -d ' \n' || true)"
+
+			setfattr -n "$attr_name" -v "$data" "files/$file_name"
+
+			touch "expected_xattr/$file_name"
+			{ sed "/^$attr_name=/d" < "expected_xattr/$file_name"; echo "$attr_name=$data"; } | sort > "expected_xattr/_$file_name"
+			mv "expected_xattr/_$file_name" "expected_xattr/$file_name"
+
+			diff -Nau --color "expected_xattr/$file_name" <(getfattr -d -e hex -m - "files/$file_name" | sed '/^#/d;/^$/d' | sort)
+		done
+
+		cut -d = -f 1 < "expected_xattr/$file_name" | shuf -n "$(shuf -n 1 -i 0-32)" | while read attr_name; do
+			setfattr -x "$attr_name" "files/$file_name"
+
+			sed "/^$attr_name=/d" < "expected_xattr/$file_name" | sort > "expected_xattr/_$file_name"
+			mv "expected_xattr/_$file_name" "expected_xattr/$file_name"
+
+			diff -Nau --color "expected_xattr/$file_name" <(getfattr -d -e hex -m - "files/$file_name" | sed '/^#/d;/^$/d' | sort)
+		done
+
+		echo >&3
+	done
+)
+
+if [ ! -e .tmp ]; then
+	echo 'ERROR: .tmp does not exist. Please run `make .tmp` first.' >&2
+	exit 1
+fi
+
+rm -rf .tmp/integration_test
+mkdir -p .tmp/integration_test/mnt_a .tmp/integration_test/mnt_b
+
+mount -t tmpfs none .tmp/integration_test/mnt_a
+mount -t tmpfs none .tmp/integration_test/mnt_b
+
+mnt_a_dev="$(stat -c '%Hd:%Ld' .tmp/integration_test/mnt_a)"
+
+test_run .tmp/integration_test/mnt_a | progress_animation '[1/4] random xattr' 64 > /dev/null
+printf '[1/4] random xattr: \033[92mpassed\033[0m\n'
+
+test_run .tmp/integration_test/mnt_b | progress_animation '[2/4] parallel mnt' 64 > /dev/null
+printf '[2/4] parallel mnt: \033[92mpassed\033[0m\n'
+
+umount .tmp/integration_test/mnt_a
+mount -t tmpfs none .tmp/integration_test/mnt_a
+
+if [ "$(stat -c '%Hd:%Ld' .tmp/integration_test/mnt_a)" != "$mnt_a_dev" ]; then
+	echo "tmpfs did not reuse device id as expected, test meaningless, abort!" >&2
+	exit 1
+fi
+
+test_run .tmp/integration_test/mnt_a | progress_animation '[3/4] reused dev id' 64 > /dev/null
+printf '[3/4] reused dev id: \033[92mpassed\033[0m\n'
+
+umount .tmp/integration_test/mnt_a
+umount .tmp/integration_test/mnt_b
+
+mount -t tmpfs none .tmp/integration_test/mnt_a
+
+if ! unshare --mount --propagation unchanged env container=lxc debootstrap --variant=minbase --include="iputils-ping selinux-basics selinux-policy-default" stable .tmp/integration_test/mnt_a | progress_animation '[4/4] selinux: creating debian chroot for test' > /dev/null; then
+	echo
+	cat .tmp/integration_test/mnt_a/debootstrap/debootstrap.log >&2
+	exit 1
+fi
+
+if ! getcap .tmp/integration_test/mnt_a/usr/bin/ping | grep cap_net_raw > /dev/null; then
+	echo
+	echo "file capability sanity check failed" >&2
+	exit 1
+fi
+
+mount --rbind /proc .tmp/integration_test/mnt_a/proc
+mount --rbind /sys .tmp/integration_test/mnt_a/sys
+mount --rbind /dev .tmp/integration_test/mnt_a/dev
+
+mkdir .tmp/integration_test/mnt_a/loop
+mount --bind .tmp/integration_test/mnt_a .tmp/integration_test/mnt_a/loop
+
+chroot .tmp/integration_test/mnt_a setfiles -v -r /loop /etc/selinux/default/contexts/files/file_contexts /loop | progress_animation '[4/4] selinux: testing selinux file labelling' > /dev/null
+
+umount .tmp/integration_test/mnt_a/loop
+
+umount -l .tmp/integration_test/mnt_a/proc
+umount -l .tmp/integration_test/mnt_a/sys
+umount -l .tmp/integration_test/mnt_a/dev
+
+if [ "$(getfattr -d -m - .tmp/integration_test/mnt_a/home 2> /dev/null | sed '/^#/d;/^$/d')" != 'security.selinux="system_u:object_r:home_root_t:s0"' ]; then
+	echo
+	echo "selinux labeling sanity check failed" >&2
+	exit 1
+fi
+
+printf '[4/4] selinux: \033[92mpassed\033[0m\n'
+
+umount .tmp/integration_test/mnt_a
+rmdir .tmp/integration_test/mnt_a .tmp/integration_test/mnt_b .tmp/integration_test

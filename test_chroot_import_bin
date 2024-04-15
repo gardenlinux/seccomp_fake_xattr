@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+set -eufo pipefail
+
+chroot="$1"
+shift
+
+while [ $# -gt 0 ]; do
+	file="$1"
+	shift
+
+	interpreter="$(patchelf --print-interpreter "$file")"
+	cp "$interpreter" "$chroot/"
+
+	ldd "$file" | grep -oP '(?<==> )[^ ]*' | while read -r lib; do
+		[ "$(basename "$lib")" != "$(basename "$interpreter")" ] || continue
+
+		target_lib="$chroot/$(basename "$lib")"
+		cp "$lib" "$target_lib"
+		patchelf --set-rpath . "$target_lib"
+	done
+
+	target_file="$chroot/$(basename "$file")"
+	cp "$file" "$target_file"
+
+	patchelf --set-rpath . --set-interpreter "$(basename "$interpreter")" "$target_file"
+done

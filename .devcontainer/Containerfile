@@ -1,0 +1,20 @@
+FROM debian
+COPY pkgs.list /
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends $(cat /pkgs.list) \
+	&& rm /pkgs.list
+RUN chmod -s /usr/bin/newuidmap \
+	&& setcap cap_setuid=ep /usr/bin/newuidmap \
+	&& chmod -s /usr/bin/newgidmap \
+	&& setcap cap_setgid=ep /usr/bin/newgidmap
+RUN groupadd --gid 1000 dev \
+	&& useradd --uid 1000 --gid 1000 --shell /bin/bash --create-home \
+		-K SUB_UID_MIN=32768 \
+		-K SUB_UID_MAX=49151 \
+		-K SUB_UID_COUNT=2048 \
+		-K SUB_GID_MIN=32768 \
+		-K SUB_GID_MAX=49151 \
+		-K SUB_GID_COUNT=2048 \
+		dev
+USER dev
+WORKDIR /home/dev

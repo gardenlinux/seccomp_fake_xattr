@@ -1,0 +1,14 @@
+*.o
+
+# generated
+syscall_lookup.c
+
+# executables
+fake_xattr
+do_syscall
+
+# tests
+test_xattr_db
+test_seccomp_unotify
+
+.tmp

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+set -eufo pipefail
+
+cat << EOF
+#include <sys/syscall.h>
+
+#include "array_size.h"
+#include "syscall_lookup.h"
+
+const char *syscall_lookup[] = {
+EOF
+
+echo '#include <sys/syscall.h>' | $CC -E -dM - | grep '^#define SYS_' | cut -d ' ' -f 2 | while read -r syscall; do
+	printf '\t[%s] = "%s",\n' $syscall ${syscall#SYS_}
+done
+
+cat << EOF
+};
+
+const size_t syscall_lookup_len = array_size(syscall_lookup);
+EOF
