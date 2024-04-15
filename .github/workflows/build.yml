@@ -71,8 +71,7 @@ jobs:
       - name: setup env context
         run: |
           repo='${{ github.repository }}'
-          commit='${{ github.sha }}'
-          echo "artifact_prefix=${repo#*/}-${commit::8}" | tee -a "$GITHUB_ENV"
+          echo "artifact_prefix=${repo#*/}" | tee -a "$GITHUB_ENV"
       - name: pack artifacts
         run: |
           for arch in x86_64 aarch64; do

@@ -59,7 +59,7 @@ static int get_file_id(xattr_db_file_id *file_id, struct seccomp_data *data, int
 		debug_printf("path=%s", path);
 	}
 
-	if (data->nr == SYS_lsetxattr) statx_flags = AT_SYMLINK_NOFOLLOW;
+	if (data->nr == SYS_lsetxattr || data->nr == SYS_lgetxattr || data->nr == SYS_llistxattr || data->nr == SYS_lremovexattr) statx_flags = AT_SYMLINK_NOFOLLOW;
 
 	if(statx(dir_fd, path, statx_flags, STATX_BASIC_STATS | STATX_BTIME, &file_statx) == -1) return -1;
 
@@ -280,7 +280,6 @@ int main(int, char **argv)
 	{
 		db = xattr_db_init();
 		ret = seccomp_unotify_vfork_exec(db, xattr_syscall_handlers, array_size(xattr_syscall_handlers), argv[1], argv + 1, environ);
-		debug_printf();
 		xattr_db_free(db);
 
 		debug_printf("max heap memory usage: %lu bytes", max_mem_account);
