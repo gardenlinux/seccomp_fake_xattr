@@ -308,6 +308,20 @@ static int supervisor(pid_t target_pid, int seccomp_notify_fd, void *ctx, seccom
 		if (poll_seccomp_notify_fd.revents & POLLHUP)
 		{
 			debug_printf("seccomp_notify_fd POLLHUP event recieved");
+
+			if (target_pid)
+			{
+				while (waitid(P_PID, target_pid, &siginfo, WEXITED) == -1)
+				{
+					if (errno != EINTR) err(1, "waitid");
+				}
+
+				debug_printf("target %d exited with status %d", siginfo.si_pid, siginfo.si_status);
+
+				ret = siginfo.si_status;
+				target_pid = 0;
+			}
+
 			break;
 		}
 		if (!(poll_seccomp_notify_fd.revents & POLLIN)) continue;
