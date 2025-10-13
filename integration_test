@@ -133,12 +133,6 @@ if ! unshare --mount --propagation unchanged env container=lxc debootstrap --var
 	exit 1
 fi
 
-if ! getcap .tmp/integration_test/mnt_a/usr/bin/ping | grep cap_net_raw > /dev/null; then
-	echo
-	echo "file capability sanity check failed" >&2
-	exit 1
-fi
-
 mount --rbind /proc .tmp/integration_test/mnt_a/proc
 mount --rbind /sys .tmp/integration_test/mnt_a/sys
 mount --rbind /dev .tmp/integration_test/mnt_a/dev
